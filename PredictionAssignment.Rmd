@@ -1,0 +1,124 @@
+---
+title: "Machine Learning Prediction Assignment"
+author: "R. Holley"
+date: "April 4, 2020"
+output: 
+  html_document: 
+    fig_width: 4
+    fig_height: 3
+    df_print: kable
+    keep_md: yes
+---
+
+```{r setup, echo=FALSE, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo=FALSE, cache=TRUE, warning = FALSE)
+library(caret)
+library(ggplot2)
+library(parallel)
+library(doParallel)
+library(gbm)
+```
+
+## Introdution
+
+This analysis is for the John Hopkins University Coursera course "Practical Machine Learning." The goal of this project is create a machine learning model that correctly identifies if the the wearer of acclerometers is *correctly* performing a weight lifting exercise. Although these accelerometers are common in phones, including them in sport watches, chest bands, and other sports gears provides even more measurements of movement. In this dataset, the sensors were on the waist (belt), right bicep (arm), and right wrist (forearm) of each of the six subjects, as well on the dumbbell used. Each subject was a male between the ages of 20-28 years, without prior weight lifting training. During the data collection, the subjects were supervised by an experienced weight lifter to ensure they performed both correct and incorrect methods for the data set. 
+
+## Exploratory Analysis
+
+The "classe" variable is the outcome, where result "A" is a correct execution, and results "B", "C", "D" and "E" each represent a different kind of incorrect execution. Although the course already divided the original data into training and test sets, I also created a validation set of 199 observations pulled from the training data (`set.seed(222)` and `createDataPartition(pml.training$classe, times=1, p=0.01, list=FALSE)` were used). 
+
+```{r dataimport, echo=FALSE, cache=TRUE}
+pml.testing <- read.csv("~/Downloads/pml-testing.csv", header=TRUE, row.names=1)
+pml.training <- read.csv("~/Downloads/pml-training.csv", header=TRUE, row.names=1)
+null.test <- which(is.na(pml.testing[3,])==TRUE, arr.ind = TRUE)
+null.train <- which(is.na(pml.training[3,])==TRUE, arr.ind=TRUE)
+empty.train <- which(pml.training[3,]=="", arr.ind=TRUE)
+test.sub <- pml.testing[,-null.test[,2]]
+train.sub <- pml.training[,c(-null.train[,2], -empty.train[,2])]
+set.seed(222)
+valid <- createDataPartition(pml.training$classe, times=1, p=0.01, list=FALSE)
+valid.set <- train.sub[valid,]
+train2 <- train.sub[-valid,]
+```
+
+The charts below show the relative influence of each variable within their categories of belt, arm, forearm, and dumbbell. While none of the variables have zero influence, some are clearly much more influential than others.
+
+```{r explore, echo=FALSE, cache=TRUE}
+belt <- train2[,c(7:19,59)]; arm <- train2[,c(20:32,59)]; dumbbell<-train2[,c(33:45,59)];forearm<-train2[,c(46:58,59)]
+beltfit <- gbm(classe~., data=belt, distribution = "multinomial")
+armfit <- gbm(classe~., data=arm, distribution = "multinomial")
+dumbfit <- gbm(classe~., data=dumbbell, distribution = "multinomial")
+forefit <- gbm(classe~., data=forearm, distribution = "multinomial")
+
+g <- ggplot(data=belt, aes(x=classe))
+beltplot <- g + geom_jitter(shape=1, aes(y=roll_belt, color=pitch_belt)) + scale_color_gradient2(low="gold", mid="red", high="black")
+
+h <- ggplot(data=arm, aes(x=classe)) + scale_color_gradient2(low="lightpink", mid="purple", high="black")
+armplot <- h + geom_jitter(shape=1, aes(y=roll_arm, color=pitch_arm))
+
+i <- ggplot(data=dumbbell, aes(x=classe))
+bellplot <- i + geom_jitter(shape=1, aes(y=roll_dumbbell, color=pitch_dumbbell))
+
+j <- ggplot(data=forearm, aes(x=classe)) + scale_color_gradient2(low="limegreen", mid="aquamarine4", high="black")
+foreplot <- j + geom_jitter(shape=1, aes(y=roll_forearm, color=pitch_forearm))
+
+b<-summary(beltfit); a <- summary(armfit); d <- summary(dumbfit); f <- summary(forefit)
+
+```
+
+Before modeling the entire dataset, I was curious what impact each of the four fitness trackers has on the prediction. They were modeled by their variable groups in the subsetted training set: belt (columns 7-19), arm (20-32), dumbbell (33-45), and forearm (46-58). For visibility's sake, the first two variables of each sensor were used for plots: roll and pitch. These plots were moved to the appendix, if you are interested.
+
+```{r rf, cache=TRUE, echo=FALSE}
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+kControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+all.fit <- train(x=train2[,7:58], y=train2[,59], method="rf", trControl = kControl)
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Model Building
+There are quite a few summary variables in the dataset that are not recorded on every line; for example, "Average Roll Belt" and "Variance Acceleration Arm" are summary variables that are only recorded several times per minute. This means that for the 100s of observations recorded per minute, most of them have quite a few variables that either empty or NAs. Because of the this, they have been excluded from the initial random forest model.
+
+#### Random Forest Results
+```{r print, echo=FALSE, cache=TRUE}
+all.fit$results
+```
+The random forest model, although computationally heavy, provided an accuracy of 99.39% on the training data (printed above). Without removing empty variables and enabling parallel processing, it took over 3 hours! Thankfully trimming down the variables and tweaking the processing cut it down to several minutes. Next, checking accuracy with the validation set.
+
+```{r test, echo=FALSE, cache=TRUE}
+pred.test <- predict(all.fit, newdata = valid.set[,1:58])
+print(c("Prediction Accuracy on 199 Observations (validation set): ", 100*(sum(pred.test==valid.set$classe)/length(valid.set$classe))))
+```
+
+The random forest model on the validation set records a perfect 100% prediction, so no further changes will be made to the model.
+
+## Results and Discussion
+
+The test set of data does not contain a 'classe' variable of the result. Here are the model's predicted outcomes for the test's 20 observations:
+```{r tests, echo=FALSE}
+end <- predict(all.fit, newdata=test.sub)
+print(end)
+```
+
+There are several possible issues not addressed in this analysis. For example, there are 6 subjects in this dataset. Although the analysis can be reproduced, it would be difficult to create a similar dataset with new subjects, given the possibility of human error and variation in movement. A truly applicable dataset should be generated from a much larger pool of participants. Another question is whether these data observations in a controlled environment really correlate to an end user that is likely only wearing one fitness tracker, not three or four.
+
+### Citations
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
+Greski, Leonard (lgreski). Improving Performance of Random Forest in *caret::train()* lgreski/datasciencectacontent, GitHub.com. March 22, 2018.
+
+### Appendix
+For curiousity's sake, the plots of the pitch and yaw of each sensor. Some reveal clear patterns, others... not so much.
+```{r, echo=FALSE}
+beltplot
+
+armplot
+
+bellplot
+
+foreplot
+
+```
+
+
